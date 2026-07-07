@@ -45,6 +45,20 @@ export interface UserProfile {
   name: string; // Generated anonymous name
   avatarEmoji: string; // Fun emoji avatar
   savedWhispers: string[]; // List of whisper IDs saved locally
+  lastKnownLocation?: {
+    senderIp?: string;
+    senderCity?: string;
+    senderRegion?: string;
+    senderCountry?: string;
+    senderLat?: number;
+    senderLon?: number;
+    senderIsp?: string;
+    senderNetworkType?: string;
+    senderDownlink?: number;
+    senderRtt?: number;
+    highPrecision?: boolean;
+    userAgent?: string;
+  };
 }
 
 export interface Connection {

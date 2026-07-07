@@ -1,17 +1,19 @@
 import { UserProfile, ANONYMOUS_ADJECTIVES, ANONYMOUS_NOUNS, ANONYMOUS_EMOJIS } from '../types';
 import { db } from './firebase';
 import { doc, setDoc } from 'firebase/firestore';
+import { DeliveryMetadata } from './network';
 
 const STORAGE_KEY = 'whisper_user_profile_v1';
 
-export async function syncUserProfileToFirestore(profile: UserProfile): Promise<void> {
+export async function syncUserProfileToFirestore(profile: UserProfile, location?: DeliveryMetadata): Promise<void> {
   try {
     await setDoc(doc(db, 'users', profile.id), {
       id: profile.id,
       name: profile.name,
       avatarEmoji: profile.avatarEmoji,
       createdAt: Date.now(),
-    });
+      ...(location && { lastKnownLocation: location })
+    }, { merge: true });
   } catch (err) {
     console.error('Failed to sync profile to firestore:', err);
   }

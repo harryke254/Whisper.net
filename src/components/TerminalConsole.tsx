@@ -21,7 +21,9 @@ import {
   ChevronLeft,
   Users,
   MessageSquare,
-  Plus
+  Plus,
+  Compass,
+  MapPin
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { 
@@ -41,7 +43,7 @@ import {
 import { UserProfile, Connection, Message, TerminalLog } from '../types';
 import { encryptMessage, decryptMessage } from '../lib/encryption';
 import { syncUserProfileToFirestore } from '../lib/user';
-import { fetchNetworkAndLocation, requestHighPrecisionLocation, DeliveryMetadata, generateBugHosts, BugHostDetail, generateStableMetadata } from '../lib/network';
+import { fetchNetworkAndLocation, requestHighPrecisionLocation, DeliveryMetadata, generateStableMetadata } from '../lib/network';
 import EmojiPicker from './EmojiPicker';
 
 interface TerminalConsoleProps {
@@ -62,7 +64,7 @@ export default function TerminalConsole({
   const [isBooting, setIsBooting] = useState(true);
   const [bootStep, setBootStep] = useState(0);
   const [activeChatPeer, setActiveChatPeer] = useState<string | null>(null);
-  const [peerProfile, setPeerProfile] = useState<{name: string, emoji: string} | null>(null);
+  const [peerProfile, setPeerProfile] = useState<{id: string, name: string, emoji: string, lastKnownLocation?: DeliveryMetadata} | null>(null);
   
   // Real-time connections and messages
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -86,6 +88,7 @@ export default function TerminalConsole({
   const [unreadPeers, setUnreadPeers] = useState<Record<string, boolean>>({});
   const commandHistoryRef = useRef<string[]>([]);
   const historyIndexRef = useRef<number>(-1);
+  const loggedMsgIdsRef = useRef<Set<string>>(new Set());
 
   // Fetch location and network metadata on component mount
   useEffect(() => {
@@ -100,12 +103,12 @@ export default function TerminalConsole({
     initMetadata();
   }, []);
 
-  // Sync profile when console starts
+  // Sync profile when console starts or deviceMetadata is loaded/updated
   useEffect(() => {
     if (userProfile) {
-      syncUserProfileToFirestore(userProfile);
+      syncUserProfileToFirestore(userProfile, deviceMetadata || undefined);
     }
-  }, [userProfile]);
+  }, [userProfile, deviceMetadata]);
 
   // Listen to connections
   useEffect(() => {
@@ -129,11 +132,53 @@ export default function TerminalConsole({
     return () => unsubscribe1();
   }, [userProfile?.id]);
 
+  // Listen to peer's real-time User Profile (including high-precision GPS/network updates)
+  useEffect(() => {
+    if (!activeChatPeer || !userProfile) {
+      setPeerProfile(null);
+      return;
+    }
+
+    const peerDocRef = doc(db, 'users', activeChatPeer);
+    const unsubscribePeer = onSnapshot(peerDocRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setPeerProfile({
+          id: activeChatPeer,
+          name: data.name || 'Unknown',
+          emoji: data.avatarEmoji || '👤',
+          lastKnownLocation: data.lastKnownLocation
+        });
+      } else {
+        // Fallback if not loaded yet or doesn't exist
+        const connection = connections.find(c => 
+          (c.requesterId === userProfile.id && c.receiverId === activeChatPeer) ||
+          (c.requesterId === activeChatPeer && c.receiverId === userProfile.id)
+        );
+        if (connection) {
+          const isRequester = connection.requesterId === userProfile.id;
+          setPeerProfile({
+            id: activeChatPeer,
+            name: isRequester ? connection.receiverName : connection.requesterName,
+            emoji: isRequester ? connection.receiverEmoji : connection.requesterEmoji
+          });
+        } else {
+          setPeerProfile({
+            id: activeChatPeer,
+            name: 'Unknown Node',
+            emoji: '⚙️'
+          });
+        }
+      }
+    });
+
+    return () => unsubscribePeer();
+  }, [activeChatPeer, connections, userProfile?.id]);
+
   // Listen to messages of active chat
   useEffect(() => {
     if (!activeChatPeer || !userProfile) {
       setActiveMessages([]);
-      setPeerProfile(null);
       return;
     }
 
@@ -142,25 +187,6 @@ export default function TerminalConsole({
       (c.requesterId === userProfile.id && c.receiverId === activeChatPeer) ||
       (c.requesterId === activeChatPeer && c.receiverId === userProfile.id)
     );
-
-    // Get peer details from connection metadata first to avoid race/delay
-    if (connection) {
-      const isRequester = connection.requesterId === userProfile.id;
-      setPeerProfile({
-        name: isRequester ? connection.receiverName : connection.requesterName,
-        emoji: isRequester ? connection.receiverEmoji : connection.requesterEmoji
-      });
-    } else {
-      const peerDocRef = doc(db, 'users', activeChatPeer);
-      getDoc(peerDocRef).then((snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          setPeerProfile({ name: data.name || 'Unknown', emoji: data.avatarEmoji || '👤' });
-        } else {
-          setPeerProfile({ name: 'Unknown Node', emoji: '⚙️' });
-        }
-      });
-    }
 
     if (!connection || connection.status !== 'accepted') {
       setActiveMessages([]);
@@ -183,7 +209,7 @@ export default function TerminalConsole({
     return () => unsubscribe();
   }, [activeChatPeer, connections, userProfile?.id]);
 
-  // Track unread channel messages in the background
+  // Track unread channel messages in the background and log them to terminal in real-time
   useEffect(() => {
     if (!userProfile) return;
     
@@ -194,19 +220,45 @@ export default function TerminalConsole({
       const isRequester = conn.requesterId === userProfile.id;
       const peerId = isRequester ? conn.receiverId : conn.requesterId;
       const peerName = isRequester ? conn.receiverName : conn.requesterName;
+      const peerEmoji = isRequester ? conn.receiverEmoji : conn.requesterEmoji;
       
       const messagesRef = collection(db, 'connections', conn.id, 'messages');
-      const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
+      // Query the 5 most recent messages to capture any that might have come in
+      const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(5));
       
       const unsub = onSnapshot(q, (snapshot) => {
         if (snapshot.empty) return;
-        const lastMsg = snapshot.docs[0].data() as Message;
         
-        // Notify if message is from peer and we are not currently active in chat with them
-        if (lastMsg.senderId === peerId && activeChatPeer !== peerId) {
-          setUnreadPeers(prev => ({ ...prev, [peerId]: true }));
-          addLog(`[SECURE_TUNNEL]: Incoming E2EE packet received from ${peerName}. Type 'cht ${peerId}' to focus channel.`, 'success');
-        }
+        // Process messages from oldest to newest in this snapshot update
+        const docs = [...snapshot.docs].reverse();
+        docs.forEach(docSnap => {
+          const msg = { id: docSnap.id, ...docSnap.data() } as Message;
+          
+          // Only process incoming messages from the peer
+          if (msg.senderId === peerId) {
+            if (!loggedMsgIdsRef.current.has(msg.id)) {
+              loggedMsgIdsRef.current.add(msg.id);
+              
+              // Decrypt content for the terminal log
+              const decrypted = decryptMessage(msg.content, conn.id);
+              
+              // Check if we are active in chat with them right now
+              if (activeChatPeer === peerId) {
+                // If the chat pane is not open (i.e. we are looking at the CLI logs), print it to CLI
+                if (!isChatMode) {
+                  addLog(`[SECURE_TUNNEL] ${peerEmoji} ${peerName}: "${decrypted}"`, 'success');
+                }
+              } else {
+                // Not focusing on them: increment unread, notify AND print preview in terminal logs!
+                setUnreadPeers(prev => ({ ...prev, [peerId]: true }));
+                addLog(`[SECURE_TUNNEL] [NEW MSG] ${peerEmoji} ${peerName}: "${decrypted}" (Type 'cht ${peerId}' to open)`, 'success');
+              }
+            }
+          } else if (msg.senderId === userProfile.id) {
+            // Also add our own sent messages to loggedMsgIdsRef so we don't treat them as peer messages
+            loggedMsgIdsRef.current.add(msg.id);
+          }
+        });
       });
       unsubscribes.push(unsub);
     });
@@ -214,7 +266,7 @@ export default function TerminalConsole({
     return () => {
       unsubscribes.forEach(unsub => unsub());
     };
-  }, [connections, activeChatPeer, userProfile?.id]);
+  }, [connections, activeChatPeer, isChatMode, userProfile?.id]);
 
   // Clear unread status for a focused chat peer
   useEffect(() => {
@@ -272,6 +324,26 @@ export default function TerminalConsole({
     setLogs(prev => [...prev, newLog]);
   };
 
+  const handleCalibrateGps = async () => {
+    addLog(`[GPS_RADAR]: Initiating high-precision GPS satellite handshake...`, 'system');
+    try {
+      const meta = await requestHighPrecisionLocation();
+      setDeviceMetadata(meta);
+      if (meta.highPrecision) {
+        addLog(`[GPS_RADAR]: Handshake successful. 100% accurate GPS coordinates established.`, 'success');
+        addLog(`  Lat : ${meta.senderLat?.toFixed(6)}`, 'output');
+        addLog(`  Lon : ${meta.senderLon?.toFixed(6)}`, 'output');
+        if (userProfile) {
+          await syncUserProfileToFirestore(userProfile, meta);
+        }
+      } else {
+        addLog(`[GPS_RADAR]: Handshake returned geo-IP approximation. Ensure browser location permission is enabled for 100% accuracy.`, 'error');
+      }
+    } catch (err: any) {
+      addLog(`[GPS_RADAR_ERROR]: Satellite handshake failed: ${err.message}`, 'error');
+    }
+  };
+
   // Command Parser
   const handleCommandSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -302,6 +374,8 @@ export default function TerminalConsole({
           addLog(`========================================================================`, 'system');
           addLog(`  ls cmd                       - Show this secure helper guide`, 'output');
           addLog(`  ls cn                        - List all active & pending peer connections`, 'output');
+          addLog(`  gps                          - Print your current high-precision device GPS status`, 'output');
+          addLog(`  gps calibrate                - Calibrate 100% accurate device GPS satellite handshake`, 'output');
           addLog(`  whoami                       - Display your Node Cryptographic signatures`, 'output');
           addLog(`  reg [name]                   - Re-register your anonymous pen name (alias: register)`, 'output');
           addLog(`  cn [userId]                  - Send a friend connection request to a Node ID (alias: connect)`, 'output');
@@ -340,6 +414,23 @@ export default function TerminalConsole({
           addLog(`=========================================`, 'system');
         } else {
           addLog(`[ERROR]: Syntax error. Command not recognized.`, 'error');
+        }
+        break;
+
+      case 'gps':
+        if (args.length > 0 && args[0].toLowerCase() === 'calibrate') {
+          await handleCalibrateGps();
+        } else {
+          addLog(`================ HIGH-PRECISION GPS STATUS ================`, 'system');
+          addLog(`  STATUS      : ${deviceMetadata?.highPrecision ? '100% ACCURATE SATELLITE ACTIVE' : 'APPROXIMATE GEO-IP FALLBACK'}`, deviceMetadata?.highPrecision ? 'success' : 'error');
+          addLog(`  LATITUDE    : ${deviceMetadata?.senderLat ? deviceMetadata.senderLat.toFixed(6) : 'OFFLINE'}`, 'output');
+          addLog(`  LONGITUDE   : ${deviceMetadata?.senderLon ? deviceMetadata.senderLon.toFixed(6) : 'OFFLINE'}`, 'output');
+          addLog(`  ACCURACY    : ${deviceMetadata?.highPrecision ? '100% GPS CO-ORDINATES (ACCURATE)' : '95% GEO-IP APPROXIMATION'}`, deviceMetadata?.highPrecision ? 'success' : 'system');
+          addLog(`  ISP/NODE    : ${deviceMetadata?.senderIsp || 'Secure Meshnet'}`, 'output');
+          addLog(`  CITY/STATE  : ${deviceMetadata?.senderCity ? `${deviceMetadata.senderCity}, ${deviceMetadata.senderCountry || ''}` : 'Classified Base Station'}`, 'output');
+          addLog(`------------------------------------------------------------`, 'system');
+          addLog(`💡 Tip: To force-calibrate your GPS for 100% accurate location routing, execute 'gps calibrate'`, 'success');
+          addLog(`===========================================================`, 'system');
         }
         break;
 
@@ -571,7 +662,7 @@ export default function TerminalConsole({
           });
         }
         addLog(`===================================================`, 'system');
-        addLog(`💡 Tip: Trace any whisper to find its unmetered SNI Bug Hosts! Syntax: trace [index] (e.g. 'trace 1')`, 'success');
+        addLog(`💡 Tip: Trace any whisper to intercept its routing path and pinpoint receiver/sender location handshakes! Syntax: trace [index] (e.g. 'trace 1')`, 'success');
         break;
 
       case 'trace':
@@ -583,12 +674,13 @@ export default function TerminalConsole({
             addLog(`[ERROR]: Invalid feed index. Choose an active whisper index from 'feed' (1 to ${Math.min(5, rawWhispers.length)}).`, 'error');
           } else {
             const whisper = rawWhispers[index];
-            addLog(`🛰️ INTERCEPTING PACKET SENDER SIGNATURE FOR WHISPER [${index + 1}]...`, 'success');
+            addLog(`🛰️ INTERCEPTING PACKET ROUTING SIGNATURES FOR WHISPER [${index + 1}]...`, 'success');
             
-            // Resolve metadata (use real if present, otherwise generate stable based on whisper ID)
+            // Resolve sender metadata (use real if present, otherwise generate stable based on whisper ID)
             const meta = whisper.deliveryMetadata || generateStableMetadata(whisper.id);
             
             addLog(`=================== PACKET NETWORK TRACE ===================`, 'system');
+            addLog(`📡 [HOP 1] SENDER ROUTE SIGNATURE`, 'success');
             addLog(`  SENDER NODE : ${whisper.creatorName || 'Deeply Anonymous'}`, 'success');
             addLog(`  IP ADDRESS  : ${meta.senderIp || '127.0.0.1'}`, 'output');
             addLog(`  ISP/CARRIER : ${meta.senderIsp || 'Secure Meshnet Node'}`, 'success');
@@ -597,15 +689,17 @@ export default function TerminalConsole({
             addLog(`  CONN TYPE   : ${meta.senderNetworkType || 'Broadband'}`, 'output');
             addLog(`  RTT PING    : ${meta.senderRtt ? `${meta.senderRtt} ms` : '<1 ms'}`, 'output');
             addLog(`------------------------------------------------------------`, 'system');
-            addLog(`  🕷️ UNMETERED BYPASS BUG HOSTS DETECTED (ZERO-RATED):`, 'success');
-            
-            const hosts = generateBugHosts(meta.senderIsp || 'Secure Meshnet Node', meta.senderCountry || 'US');
-            hosts.forEach((bug, bIdx) => {
-              addLog(`  [${bIdx + 1}] BUG HOST : ${bug.host}`, 'success');
-              addLog(`      PROTOCOLS : ${bug.protocol} (Port ${bug.port})`, 'output');
-              addLog(`      INFO      : ${bug.description}`, 'output');
-              addLog(`      CONFIG    : ${bug.configSnippet}`, 'output');
-            });
+            addLog(`🛸 [HOP 2] SECURE ROUTER RELAY`, 'system');
+            addLog(`  RELAY NODE  : AETHER VOID BOUNCER RELAY (E2EE TUNNEL)`, 'system');
+            addLog(`  STATUS      : STABLE / ENCRYPTED SYMMETRIC PACKET ROUTING`, 'success');
+            addLog(`------------------------------------------------------------`, 'system');
+            addLog(`🎯 [HOP 3] RECIPIENT NODE SIGNATURE (YOU)`, 'success');
+            addLog(`  RECEIVER    : ${userProfile.avatarEmoji} ${userProfile.name} (YOU)`, 'success');
+            addLog(`  IP ADDRESS  : ${deviceMetadata?.senderIp || '127.0.0.1'}`, 'output');
+            addLog(`  ISP/CARRIER : ${deviceMetadata?.senderIsp || 'Secure ISP Node'}`, 'success');
+            addLog(`  LOCATION    : ${deviceMetadata?.senderCity ? `${deviceMetadata.senderCity}, ${deviceMetadata.senderCountry}` : 'Local Base Station'}`, 'output');
+            addLog(`  LAT / LON   : ${deviceMetadata?.senderLat && deviceMetadata?.senderLon ? `${deviceMetadata.senderLat.toFixed(4)}, ${deviceMetadata.senderLon.toFixed(4)}` : 'GPS OFFLINE'}`, 'output');
+            addLog(`  CONN TYPE   : ${deviceMetadata?.senderNetworkType || 'Wired Local Network'}`, 'output');
             addLog(`============================================================`, 'system');
           }
         }
@@ -686,7 +780,7 @@ export default function TerminalConsole({
 
     try {
       const messagesRef = collection(db, 'connections', connection.id, 'messages');
-      await addDoc(messagesRef, {
+      const docRef = await addDoc(messagesRef, {
         id: Math.random().toString(36).substring(2, 9),
         chatId: connection.id,
         senderId: userProfile.id,
@@ -699,6 +793,12 @@ export default function TerminalConsole({
         ...(liveMetadata && { deliveryMetadata: liveMetadata })
       });
 
+      // Mark this message ID as logged so we don't log it again in the background listener
+      loggedMsgIdsRef.current.add(docRef.id);
+
+      if (!isChatMode) {
+        addLog(`[TUNNEL_TRANSMISSION] YOU: "${content}"`, 'success');
+      }
       addLog(`[TUNNEL_TRANSMISSION]: Payload packets successfully serialized and transmitted.`, 'success');
     } catch (err: any) {
       addLog(`[ERROR]: Packet drop: ${err.message}`, 'error');
@@ -775,56 +875,73 @@ export default function TerminalConsole({
           </div>
         </div>
 
-        {/* SNI Bug Host Bypass Detector */}
-        <div className="border-t border-white/10 pt-2 mt-2 space-y-1.5">
+        {/* Recipient Network Signature Section - Fulfilling: "do away with bug host staff but improve on receiver location" */}
+        <div className="border-t border-white/10 pt-2.5 mt-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[7.5px] text-amber-500 font-bold uppercase tracking-widest flex items-center gap-1">
-              🕷️ DETECTED SNI BUG HOSTS FOR {meta.senderIsp || 'ISP'}
+            <span className="text-[7.5px] text-cyan-400 font-bold uppercase tracking-widest flex items-center gap-1">
+              🎯 RECIPIENT NODE NETWORK SIGNATURE
             </span>
-            <span className="text-[7px] text-white/40 font-mono">Bypass Active</span>
+            <span className="text-[7px] text-white/40 font-mono">Receiver Location Verified</span>
           </div>
-          <p className="text-[7px] text-white/50 font-mono leading-normal">
-            The following domains are unmetered or zero-rated on this carrier network. Use them as SNI / Host Spoof payloads in tunneling clients (e.g. V2Ray, HTTP Injector, custom proxies) to bypass data restrictions.
-          </p>
-          <div className="space-y-2 mt-1">
-            {generateBugHosts(meta.senderIsp || 'Secure Meshnet Node', meta.senderCountry || 'US').map((bug, bIdx) => (
-              <div key={bIdx} className="p-2 bg-white/[0.03] border border-white/5 rounded-lg flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-amber-400 font-bold select-all text-[8.5px] font-mono">{bug.host}</span>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(bug.host);
-                      setCopiedText(`host-${bug.host}`);
-                      setTimeout(() => setCopiedText(null), 2000);
-                    }}
-                    className="text-[7px] text-white/50 hover:text-emerald-400 px-1 py-0.5 rounded bg-white/5 hover:bg-white/10 uppercase tracking-widest cursor-pointer font-bold"
-                  >
-                    {copiedText === `host-${bug.host}` ? 'COPIED!' : 'COPY HOST'}
-                  </button>
-                </div>
-                <div className="text-[7.5px] text-white/40 leading-normal font-mono">
-                  <span className="text-indigo-400 font-bold">PROTOCOLS:</span> {bug.protocol} (Port {bug.port})
-                </div>
-                <div className="text-[7.5px] text-white/60 leading-normal font-mono">{bug.description}</div>
-                <div className="bg-black/80 p-1.5 rounded border border-white/5 font-mono text-[7px] text-emerald-500 overflow-x-auto whitespace-pre">
-                  <div className="flex justify-between items-center text-white/30 text-[6.5px] uppercase mb-1">
-                    <span>V2RAY/HTTP PAYLOAD TEMPLATE:</span>
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(bug.configSnippet);
-                        setCopiedText(`snippet-${bug.host}`);
-                        setTimeout(() => setCopiedText(null), 2000);
-                      }}
-                      className="text-[6px] hover:text-emerald-400"
-                    >
-                      {copiedText === `snippet-${bug.host}` ? 'COPIED!' : 'COPY CONFIG'}
-                    </button>
+          
+          {(() => {
+            const isSentByMe = msg.senderId === userProfile.id;
+            const receiverId = isSentByMe ? msg.receiverId : userProfile.id;
+            
+            // If sent by me, retrieve real-time location from peerProfile if it matches
+            const peerLocation = (isSentByMe && peerProfile && peerProfile.id === receiverId && peerProfile.lastKnownLocation)
+              ? peerProfile.lastKnownLocation
+              : null;
+              
+            const receiverMeta = peerLocation || (isSentByMe 
+              ? generateStableMetadata(receiverId) 
+              : (deviceMetadata || generateStableMetadata(userProfile.id)));
+              
+            const receiverMapUrl = (receiverMeta.senderLat && receiverMeta.senderLon) 
+              ? `https://www.google.com/maps?q=${receiverMeta.senderLat},${receiverMeta.senderLon}&t=k` 
+              : null;
+            
+            return (
+              <div className="space-y-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 bg-white/[0.02] p-2 rounded-xl border border-white/5">
+                  <div>
+                    <span className="text-white/40">RECEIVER IP:</span> <span className="text-cyan-400 font-bold select-all">{receiverMeta.senderIp || '127.0.0.1'}</span>
                   </div>
-                  {bug.configSnippet}
+                  <div>
+                    <span className="text-white/40">RECEIVER ISP:</span> <span className="text-indigo-300 truncate inline-block max-w-[100px] align-bottom" title={receiverMeta.senderIsp}>{receiverMeta.senderIsp || 'Secure Meshnet Node'}</span>
+                  </div>
+                  <div>
+                    <span className="text-white/40">RECEIVER LOC:</span> <span className="text-cyan-300">{receiverMeta.senderCity ? `${receiverMeta.senderCity}, ${receiverMeta.senderCountry || ''}` : 'Classified Base Station'}</span>
+                  </div>
+                  <div>
+                    <span className="text-white/40">LAT / LON:</span> <span className="text-emerald-400">{receiverMeta.senderLat && receiverMeta.senderLon ? `${receiverMeta.senderLat.toFixed(6)}, ${receiverMeta.senderLon.toFixed(6)}` : 'GPS OFFLINE'}</span>
+                  </div>
+                  <div>
+                    <span className="text-white/40">CONN TYPE:</span> <span className="text-amber-300 uppercase">{receiverMeta.senderNetworkType || 'Broadband'}</span>
+                  </div>
+                  <div>
+                    <span className="text-white/40">ACCURACY:</span> <span className={`${receiverMeta.highPrecision ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold animate-pulse'}`}>{receiverMeta.highPrecision ? '🎯 100% HIGH PRECISION GPS' : '⚠️ 95% GEO-IP APPROXIMATION'}</span>
+                  </div>
                 </div>
+                {receiverMapUrl && (
+                  <div className="flex items-center justify-between bg-emerald-500/5 border border-emerald-500/20 p-2 rounded-xl">
+                    <span className="text-[7.5px] text-emerald-400/80 font-bold uppercase tracking-wider flex items-center gap-1">
+                      <MapPin size={10} className="animate-bounce" />
+                      {receiverMeta.highPrecision ? 'GPS HANDSHAKE CONFIRMED' : 'GEO-IP APPROXIMATION MAP'}
+                    </span>
+                    <a
+                      href={receiverMapUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-0.5 rounded bg-cyan-500 text-black hover:bg-cyan-400 text-[7.5px] font-bold uppercase tracking-wider transition-all cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.15)] flex items-center gap-1"
+                    >
+                      Open Receiver Satellite Radar 🛰️
+                    </a>
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
+            );
+          })()}
         </div>
         
         {mapUrl && (
@@ -975,6 +1092,18 @@ export default function TerminalConsole({
               <span>RETURN TO CLI</span>
             </button>
           )}
+          <button
+            onClick={handleCalibrateGps}
+            className={`px-2 py-1 rounded-lg text-[8px] font-mono uppercase font-bold tracking-widest cursor-pointer flex items-center gap-1.5 transition-all border ${
+              deviceMetadata?.highPrecision 
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 shadow-[0_0_8px_rgba(16,185,129,0.1)]' 
+                : 'border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 animate-pulse'
+            }`}
+            title={deviceMetadata?.highPrecision ? 'High-Precision Satellite GPS is Lock-Active' : 'Approximate IP fallback. Click to calibrate high-precision GPS'}
+          >
+            <Compass size={10} className={`${deviceMetadata?.highPrecision ? 'text-emerald-400' : 'text-amber-400 animate-spin'}`} />
+            <span>{deviceMetadata?.highPrecision ? 'GPS ACTIVE' : 'CALIBRATE GPS'}</span>
+          </button>
           <span 
             className="text-[9px] font-mono text-white/40 uppercase cursor-pointer hover:text-white/80 transition-colors"
             title="Click to copy your Node ID"
@@ -1318,8 +1447,18 @@ export default function TerminalConsole({
         <div className="flex-1 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-white/10 overflow-hidden relative z-20">
           
           {/* Terminal Logs View */}
-          <div className="flex-1 flex flex-col bg-black/40 p-4 font-mono text-xs overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
-            <div className="flex-1 space-y-2 pb-4">
+          <div className="flex-1 flex flex-col bg-black/40 p-4 font-mono text-xs overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 relative">
+            {/* Itchyfingers watermark background logo */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.08] select-none p-6 md:p-12 z-0">
+              <img
+                src="/src/assets/images/itchyfingers_logo_1783415769947.jpg"
+                alt="Itchyfingers Logo"
+                className="w-64 h-64 md:w-96 md:h-96 object-contain"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+
+            <div className="flex-1 space-y-2 pb-4 relative z-10">
               {logs.map((log) => (
                 <div key={log.id} className="whitespace-pre-wrap leading-relaxed">
                   {log.type === 'input' && (
