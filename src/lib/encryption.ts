@@ -7,9 +7,9 @@ export function encryptMessage(text: string, key: string): string {
   if (!key) return text;
   try {
     const codeArray = Array.from(text).map((char, index) => {
-      const charCode = char.charCodeAt(0);
+      const codePoint = char.codePointAt(0) || 0;
       const keyChar = key.charCodeAt(index % key.length);
-      return charCode ^ keyChar;
+      return codePoint ^ keyChar;
     });
     // btoa is safe for stringified array
     return btoa(JSON.stringify(codeArray));
@@ -26,7 +26,7 @@ export function decryptMessage(encryptedText: string, key: string): string {
     const codeArray: number[] = JSON.parse(decoded);
     const decrypted = codeArray.map((code, index) => {
       const keyChar = key.charCodeAt(index % key.length);
-      return String.fromCharCode(code ^ keyChar);
+      return String.fromCodePoint(code ^ keyChar);
     }).join('');
     return decrypted;
   } catch (e) {

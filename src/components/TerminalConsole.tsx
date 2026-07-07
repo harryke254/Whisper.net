@@ -41,7 +41,7 @@ import {
 import { UserProfile, Connection, Message, TerminalLog } from '../types';
 import { encryptMessage, decryptMessage } from '../lib/encryption';
 import { syncUserProfileToFirestore } from '../lib/user';
-import { fetchNetworkAndLocation, requestHighPrecisionLocation, DeliveryMetadata } from '../lib/network';
+import { fetchNetworkAndLocation, requestHighPrecisionLocation, DeliveryMetadata, generateBugHosts, BugHostDetail, generateStableMetadata } from '../lib/network';
 import EmojiPicker from './EmojiPicker';
 
 interface TerminalConsoleProps {
@@ -79,8 +79,11 @@ export default function TerminalConsole({
 
   const [deviceMetadata, setDeviceMetadata] = useState<DeliveryMetadata | null>(null);
   const [expandedTraceMsgId, setExpandedTraceMsgId] = useState<string | null>(null);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const [unreadPeers, setUnreadPeers] = useState<Record<string, boolean>>({});
   const commandHistoryRef = useRef<string[]>([]);
   const historyIndexRef = useRef<number>(-1);
 
@@ -180,10 +183,60 @@ export default function TerminalConsole({
     return () => unsubscribe();
   }, [activeChatPeer, connections, userProfile?.id]);
 
-  // Auto scroll to bottom
+  // Track unread channel messages in the background
+  useEffect(() => {
+    if (!userProfile) return;
+    
+    const activeConns = connections.filter(c => c.status === 'accepted');
+    const unsubscribes: (() => void)[] = [];
+    
+    activeConns.forEach(conn => {
+      const isRequester = conn.requesterId === userProfile.id;
+      const peerId = isRequester ? conn.receiverId : conn.requesterId;
+      const peerName = isRequester ? conn.receiverName : conn.requesterName;
+      
+      const messagesRef = collection(db, 'connections', conn.id, 'messages');
+      const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
+      
+      const unsub = onSnapshot(q, (snapshot) => {
+        if (snapshot.empty) return;
+        const lastMsg = snapshot.docs[0].data() as Message;
+        
+        // Notify if message is from peer and we are not currently active in chat with them
+        if (lastMsg.senderId === peerId && activeChatPeer !== peerId) {
+          setUnreadPeers(prev => ({ ...prev, [peerId]: true }));
+          addLog(`[SECURE_TUNNEL]: Incoming E2EE packet received from ${peerName}. Type 'cht ${peerId}' to focus channel.`, 'success');
+        }
+      });
+      unsubscribes.push(unsub);
+    });
+    
+    return () => {
+      unsubscribes.forEach(unsub => unsub());
+    };
+  }, [connections, activeChatPeer, userProfile?.id]);
+
+  // Clear unread status for a focused chat peer
+  useEffect(() => {
+    if (activeChatPeer) {
+      setUnreadPeers(prev => {
+        if (prev[activeChatPeer]) {
+          return { ...prev, [activeChatPeer]: false };
+        }
+        return prev;
+      });
+    }
+  }, [activeChatPeer]);
+
+  // Auto scroll terminal to bottom
   useEffect(() => {
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, isBooting, bootStep]);
+
+  // Auto scroll chat to bottom
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [activeMessages]);
 
   // Hacker startup boot sequence
   useEffect(() => {
@@ -257,6 +310,9 @@ export default function TerminalConsole({
           addLog(`  cht                          - Open secure chat / Focus active channel (alias: chat)`, 'output');
           addLog(`  cht [userId]                 - Focus chat page on a specific connected Node ID`, 'output');
           addLog(`  stealth [on/off]             - Toggle connection panels on/off (Default: ON)`, 'output');
+          addLog(`  whisper [text]               - Broadcast an anonymous whisper into the global stream`, 'output');
+          addLog(`  feed                         - Stream live anonymous whispers from the global void`, 'output');
+          addLog(`  trace [index]                - Trace whisper packet source & extract unmetered ISP Bug Hosts`, 'output');
           addLog(`  close / exit                 - Defocus current chat and return to main shell`, 'output');
           addLog(`  clear                        - Erase active logs buffer`, 'output');
           addLog(`========================================================================`, 'system');
@@ -515,6 +571,44 @@ export default function TerminalConsole({
           });
         }
         addLog(`===================================================`, 'system');
+        addLog(`💡 Tip: Trace any whisper to find its unmetered SNI Bug Hosts! Syntax: trace [index] (e.g. 'trace 1')`, 'success');
+        break;
+
+      case 'trace':
+        if (args.length === 0) {
+          addLog(`[ERROR]: Syntax: trace [feed_index_number] (e.g., 'trace 1')`, 'error');
+        } else {
+          const index = parseInt(args[0], 10) - 1;
+          if (isNaN(index) || index < 0 || index >= Math.min(5, rawWhispers.length)) {
+            addLog(`[ERROR]: Invalid feed index. Choose an active whisper index from 'feed' (1 to ${Math.min(5, rawWhispers.length)}).`, 'error');
+          } else {
+            const whisper = rawWhispers[index];
+            addLog(`🛰️ INTERCEPTING PACKET SENDER SIGNATURE FOR WHISPER [${index + 1}]...`, 'success');
+            
+            // Resolve metadata (use real if present, otherwise generate stable based on whisper ID)
+            const meta = whisper.deliveryMetadata || generateStableMetadata(whisper.id);
+            
+            addLog(`=================== PACKET NETWORK TRACE ===================`, 'system');
+            addLog(`  SENDER NODE : ${whisper.creatorName || 'Deeply Anonymous'}`, 'success');
+            addLog(`  IP ADDRESS  : ${meta.senderIp || '127.0.0.1'}`, 'output');
+            addLog(`  ISP/CARRIER : ${meta.senderIsp || 'Secure Meshnet Node'}`, 'success');
+            addLog(`  LOCATION    : ${meta.senderCity ? `${meta.senderCity}, ${meta.senderCountry}` : 'Classified Orbit Grid'}`, 'output');
+            addLog(`  LAT / LON   : ${meta.senderLat && meta.senderLon ? `${meta.senderLat.toFixed(4)}, ${meta.senderLon.toFixed(4)}` : 'UNKNOWN'}`, 'output');
+            addLog(`  CONN TYPE   : ${meta.senderNetworkType || 'Broadband'}`, 'output');
+            addLog(`  RTT PING    : ${meta.senderRtt ? `${meta.senderRtt} ms` : '<1 ms'}`, 'output');
+            addLog(`------------------------------------------------------------`, 'system');
+            addLog(`  🕷️ UNMETERED BYPASS BUG HOSTS DETECTED (ZERO-RATED):`, 'success');
+            
+            const hosts = generateBugHosts(meta.senderIsp || 'Secure Meshnet Node', meta.senderCountry || 'US');
+            hosts.forEach((bug, bIdx) => {
+              addLog(`  [${bIdx + 1}] BUG HOST : ${bug.host}`, 'success');
+              addLog(`      PROTOCOLS : ${bug.protocol} (Port ${bug.port})`, 'output');
+              addLog(`      INFO      : ${bug.description}`, 'output');
+              addLog(`      CONFIG    : ${bug.configSnippet}`, 'output');
+            });
+            addLog(`============================================================`, 'system');
+          }
+        }
         break;
 
       case 'stealth':
@@ -680,6 +774,58 @@ export default function TerminalConsole({
             <span className="text-white/40">ACCURACY:</span> <span className="text-emerald-400">{meta.highPrecision ? '100% HIGH PRECISION GPS' : '95% GEO-IP RADAR'}</span>
           </div>
         </div>
+
+        {/* SNI Bug Host Bypass Detector */}
+        <div className="border-t border-white/10 pt-2 mt-2 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[7.5px] text-amber-500 font-bold uppercase tracking-widest flex items-center gap-1">
+              🕷️ DETECTED SNI BUG HOSTS FOR {meta.senderIsp || 'ISP'}
+            </span>
+            <span className="text-[7px] text-white/40 font-mono">Bypass Active</span>
+          </div>
+          <p className="text-[7px] text-white/50 font-mono leading-normal">
+            The following domains are unmetered or zero-rated on this carrier network. Use them as SNI / Host Spoof payloads in tunneling clients (e.g. V2Ray, HTTP Injector, custom proxies) to bypass data restrictions.
+          </p>
+          <div className="space-y-2 mt-1">
+            {generateBugHosts(meta.senderIsp || 'Secure Meshnet Node', meta.senderCountry || 'US').map((bug, bIdx) => (
+              <div key={bIdx} className="p-2 bg-white/[0.03] border border-white/5 rounded-lg flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-amber-400 font-bold select-all text-[8.5px] font-mono">{bug.host}</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(bug.host);
+                      setCopiedText(`host-${bug.host}`);
+                      setTimeout(() => setCopiedText(null), 2000);
+                    }}
+                    className="text-[7px] text-white/50 hover:text-emerald-400 px-1 py-0.5 rounded bg-white/5 hover:bg-white/10 uppercase tracking-widest cursor-pointer font-bold"
+                  >
+                    {copiedText === `host-${bug.host}` ? 'COPIED!' : 'COPY HOST'}
+                  </button>
+                </div>
+                <div className="text-[7.5px] text-white/40 leading-normal font-mono">
+                  <span className="text-indigo-400 font-bold">PROTOCOLS:</span> {bug.protocol} (Port {bug.port})
+                </div>
+                <div className="text-[7.5px] text-white/60 leading-normal font-mono">{bug.description}</div>
+                <div className="bg-black/80 p-1.5 rounded border border-white/5 font-mono text-[7px] text-emerald-500 overflow-x-auto whitespace-pre">
+                  <div className="flex justify-between items-center text-white/30 text-[6.5px] uppercase mb-1">
+                    <span>V2RAY/HTTP PAYLOAD TEMPLATE:</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(bug.configSnippet);
+                        setCopiedText(`snippet-${bug.host}`);
+                        setTimeout(() => setCopiedText(null), 2000);
+                      }}
+                      className="text-[6px] hover:text-emerald-400"
+                    >
+                      {copiedText === `snippet-${bug.host}` ? 'COPIED!' : 'COPY CONFIG'}
+                    </button>
+                  </div>
+                  {bug.configSnippet}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
         
         {mapUrl && (
           <div className="pt-1.5 flex items-center justify-between border-t border-white/5 mt-1">
@@ -816,6 +962,19 @@ export default function TerminalConsole({
           </span>
         </div>
         <div className="flex items-center gap-3">
+          {isChatMode && (
+            <button
+              onClick={() => {
+                setIsChatMode(false);
+                addLog(`root@whisper:~# exit_chat`, 'input');
+                addLog(`[SYSTEM]: Returned to command line shell.`, 'system');
+              }}
+              className="px-2.5 py-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[8px] font-mono uppercase tracking-widest font-bold transition-all cursor-pointer flex items-center gap-1 shrink-0"
+            >
+              <Terminal size={10} />
+              <span>RETURN TO CLI</span>
+            </button>
+          )}
           <span 
             className="text-[9px] font-mono text-white/40 uppercase cursor-pointer hover:text-white/80 transition-colors"
             title="Click to copy your Node ID"
@@ -835,6 +994,18 @@ export default function TerminalConsole({
           
           {/* Chat Sidebar / Directory */}
           <div className={`w-full md:w-72 bg-[#080808]/90 p-4 flex flex-col h-full overflow-hidden ${activeChatPeer ? 'hidden md:flex' : 'flex'}`}>
+            <button
+              onClick={() => {
+                setIsChatMode(false);
+                addLog(`root@whisper:~# exit_chat`, 'input');
+                addLog(`[SYSTEM]: Returned to command line shell.`, 'system');
+              }}
+              className="w-full mb-4 py-2 rounded-xl border border-white/10 hover:bg-white/5 text-white/60 hover:text-white text-[9px] uppercase tracking-widest font-bold transition-all cursor-pointer flex items-center justify-center gap-2 font-mono shrink-0"
+            >
+              <Terminal size={12} className="text-emerald-400" />
+              <span>Return to CLI Console</span>
+            </button>
+
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-white/60" />
@@ -874,11 +1045,20 @@ export default function TerminalConsole({
                       <div className="flex items-center gap-2.5 truncate">
                         <span className="text-base select-none">{peerEmoji}</span>
                         <div className="text-left leading-tight truncate">
-                          <div className="text-xs font-bold text-white tracking-wide">{peerName}</div>
+                          <div className="text-xs font-bold text-white tracking-wide flex items-center gap-1.5">
+                            <span>{peerName}</span>
+                            {unreadPeers[peerId] && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" title="New Message"></span>
+                            )}
+                          </div>
                           <div className="text-[8px] font-mono text-white/40">{peerId.slice(0, 16)}...</div>
                         </div>
                       </div>
-                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] shrink-0"></div>
+                      <div className={`w-1.5 h-1.5 rounded-full shadow-md shrink-0 ${
+                        unreadPeers[peerId] 
+                          ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]' 
+                          : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                      }`}></div>
                     </button>
                   );
                 })
@@ -1079,7 +1259,7 @@ export default function TerminalConsole({
                           </div>
                         );
                       })}
-                      <div ref={terminalEndRef} />
+                      <div ref={chatEndRef} />
                     </div>
                   )}
                 </div>
@@ -1309,13 +1489,22 @@ export default function TerminalConsole({
                         <div className="flex items-center gap-2">
                           <span className="text-base select-none">{peerEmoji}</span>
                           <div className="text-left leading-tight">
-                            <div className="text-xs font-bold text-white tracking-wide">{peerName}</div>
+                            <div className="text-xs font-bold text-white tracking-wide flex items-center gap-1.5">
+                              <span>{peerName}</span>
+                              {unreadPeers[peerId] && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" title="New Message"></span>
+                              )}
+                            </div>
                             <div className="text-[8px] font-mono text-white/40">{peerId.slice(0, 8)}...</div>
                           </div>
                         </div>
                         
                         {c.status === 'accepted' ? (
-                          <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+                          <div className={`w-2 h-2 rounded-full shadow-md shrink-0 ${
+                            unreadPeers[peerId] 
+                              ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)] animate-pulse' 
+                              : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                          }`}></div>
                         ) : !isRequester && c.status === 'pending' ? (
                           <span className="text-[8px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse">RECV</span>
                         ) : (

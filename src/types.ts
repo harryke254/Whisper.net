@@ -12,6 +12,20 @@ export interface Whisper {
   reports: string[]; // List of creatorIds who reported this
   expiresAt: number | null; // Self-destruction timestamp, or null
   commentsCount: number;
+  deliveryMetadata?: {
+    senderIp?: string;
+    senderCity?: string;
+    senderRegion?: string;
+    senderCountry?: string;
+    senderLat?: number;
+    senderLon?: number;
+    senderIsp?: string;
+    senderNetworkType?: string;
+    senderDownlink?: number;
+    senderRtt?: number;
+    highPrecision?: boolean;
+    userAgent?: string;
+  };
 }
 
 export interface Comment {

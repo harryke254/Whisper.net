@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Whisper, UserProfile } from './types';
 import { getOrCreateUserProfile } from './lib/user';
 import { db } from './lib/firebase';
+import { fetchNetworkAndLocation } from './lib/network';
 import { 
   collection, 
   addDoc, 
@@ -62,6 +63,13 @@ export default function App() {
 
     const expiresAt = selfDestruct ? Date.now() + 24 * 60 * 60 * 1000 : null;
 
+    let deliveryMetadata = null;
+    try {
+      deliveryMetadata = await fetchNetworkAndLocation();
+    } catch (e) {
+      console.warn("Failed to capture metadata for whisper posting:", e);
+    }
+
     await addDoc(collection(db, 'whispers'), {
       content,
       createdAt: Date.now(),
@@ -75,6 +83,7 @@ export default function App() {
       reports: [],
       expiresAt,
       commentsCount: 0,
+      ...(deliveryMetadata && { deliveryMetadata })
     });
   };
 
