@@ -82,6 +82,8 @@ export interface Message {
   isEncrypted: boolean;
   encryptionKeyHint?: string;
   createdAt: number;
+  deletedFor?: string[]; // Array of node IDs who deleted the message for themselves
+  isDeleted?: boolean; // True if message is deleted for both/everyone
   filePayload?: {
     fileName: string;
     fileType: string;

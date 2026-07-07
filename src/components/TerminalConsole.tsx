@@ -46,13 +46,23 @@ import {
   query, 
   orderBy, 
   limit, 
-  where 
+  where,
+  arrayUnion 
 } from 'firebase/firestore';
 import { UserProfile, Connection, Message, TerminalLog } from '../types';
 import { encryptMessage, decryptMessage } from '../lib/encryption';
 import { syncUserProfileToFirestore } from '../lib/user';
 import { fetchNetworkAndLocation, requestHighPrecisionLocation, DeliveryMetadata, generateStableMetadata } from '../lib/network';
 import EmojiPicker from './EmojiPicker';
+import itchyfingersLogo from '../assets/images/itchyfingers_brand_logo_1783416175067.jpg';
+
+interface MessageNotification {
+  id: string;
+  senderName: string;
+  senderEmoji: string;
+  text: string;
+  peerId: string;
+}
 
 interface TerminalConsoleProps {
   userProfile: UserProfile;
@@ -100,6 +110,7 @@ export default function TerminalConsole({
   const terminalEndRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [unreadPeers, setUnreadPeers] = useState<Record<string, boolean>>({});
+  const [latestNotification, setLatestNotification] = useState<MessageNotification | null>(null);
   const commandHistoryRef = useRef<string[]>([]);
   const historyIndexRef = useRef<number>(-1);
   const loggedMsgIdsRef = useRef<Set<string>>(new Set());
@@ -213,7 +224,10 @@ export default function TerminalConsole({
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const msgs: Message[] = [];
       snapshot.forEach((docSnap) => {
-        msgs.push({ id: docSnap.id, ...docSnap.data() } as Message);
+        const msg = { id: docSnap.id, ...docSnap.data() } as Message;
+        if (!msg.deletedFor?.includes(userProfile.id)) {
+          msgs.push(msg);
+        }
       });
       setActiveMessages(msgs);
     }, (error) => {
@@ -248,6 +262,11 @@ export default function TerminalConsole({
         docs.forEach(docSnap => {
           const msg = { id: docSnap.id, ...docSnap.data() } as Message;
           
+          // Exclude deleted messages
+          if (msg.isDeleted || msg.deletedFor?.includes(userProfile.id)) {
+            return;
+          }
+
           // Only process incoming messages from the peer
           if (msg.senderId === peerId) {
             if (!loggedMsgIdsRef.current.has(msg.id)) {
@@ -256,16 +275,26 @@ export default function TerminalConsole({
               // Decrypt content for the terminal log
               const decrypted = decryptMessage(msg.content, conn.id);
               
-              // Check if we are active in chat with them right now
-              if (activeChatPeer === peerId) {
-                // If the chat pane is not open (i.e. we are looking at the CLI logs), print it to CLI
-                if (!isChatMode) {
-                  addLog(`[SECURE_TUNNEL] ${peerEmoji} ${peerName}: "${decrypted}"`, 'success');
-                }
+              // Check if we are active in chat with them right now inside Chat Mode
+              if (activeChatPeer === peerId && isChatMode) {
+                // Already in open chat, do nothing
               } else {
-                // Not focusing on them: increment unread, notify AND print preview in terminal logs!
-                setUnreadPeers(prev => ({ ...prev, [peerId]: true }));
+                // Increment unread unless we're actually focusing on them in Chat Mode
+                if (!(activeChatPeer === peerId && isChatMode)) {
+                  setUnreadPeers(prev => ({ ...prev, [peerId]: true }));
+                }
+
+                // Print preview in terminal logs
                 addLog(`[SECURE_TUNNEL] [NEW MSG] ${peerEmoji} ${peerName}: "${decrypted}" (Type 'cht ${peerId}' to open)`, 'success');
+                
+                // Show floating notification on terminal screen
+                setLatestNotification({
+                  id: msg.id,
+                  senderName: peerName,
+                  senderEmoji: peerEmoji,
+                  text: decrypted,
+                  peerId: peerId
+                });
               }
             }
           } else if (msg.senderId === userProfile.id) {
@@ -284,7 +313,7 @@ export default function TerminalConsole({
 
   // Clear unread status for a focused chat peer
   useEffect(() => {
-    if (activeChatPeer) {
+    if (activeChatPeer && isChatMode) {
       setUnreadPeers(prev => {
         if (prev[activeChatPeer]) {
           return { ...prev, [activeChatPeer]: false };
@@ -292,7 +321,7 @@ export default function TerminalConsole({
         return prev;
       });
     }
-  }, [activeChatPeer]);
+  }, [activeChatPeer, isChatMode]);
 
   // Auto scroll terminal to bottom
   useEffect(() => {
@@ -303,6 +332,15 @@ export default function TerminalConsole({
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeMessages]);
+
+  // Auto dismiss floating notifications after 6 seconds
+  useEffect(() => {
+    if (!latestNotification) return;
+    const timer = setTimeout(() => {
+      setLatestNotification(null);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [latestNotification]);
 
   // Hacker startup boot sequence
   useEffect(() => {
@@ -1117,6 +1155,30 @@ export default function TerminalConsole({
     setChatInputText('');
   };
 
+  const handleDeleteMessageForMe = async (msg: Message) => {
+    try {
+      const msgRef = doc(db, 'connections', msg.chatId, 'messages', msg.id);
+      await updateDoc(msgRef, {
+        deletedFor: arrayUnion(userProfile.id)
+      });
+      addLog(`[SYSTEM]: Message packet purged from local logs.`, 'success');
+    } catch (err: any) {
+      addLog(`[ERROR]: Failed to delete local packet: ${err.message}`, 'error');
+    }
+  };
+
+  const handleDeleteMessageForBoth = async (msg: Message) => {
+    try {
+      const msgRef = doc(db, 'connections', msg.chatId, 'messages', msg.id);
+      await updateDoc(msgRef, {
+        isDeleted: true
+      });
+      addLog(`[SYSTEM]: Quantum-scrambled packet erased for both nodes.`, 'success');
+    } catch (err: any) {
+      addLog(`[ERROR]: Failed to erase message packet: ${err.message}`, 'error');
+    }
+  };
+
   const handleFileChange = (file: File) => {
     setFileError(null);
     if (file.size > 800 * 1024) {
@@ -1729,16 +1791,43 @@ export default function TerminalConsole({
                                 </span>
                               </div>
                               
-                              {msg.filePayload ? (
+                              {msg.isDeleted ? (
+                                <div className="text-left text-xs italic font-mono text-red-400/70 flex items-center gap-1.5 py-0.5">
+                                  <Trash2 size={10} className="text-red-500/60 shrink-0" />
+                                  <span>[SIGNAL ERASED: MESSAGE DELETED]</span>
+                                </div>
+                              ) : msg.filePayload ? (
                                 renderFilePayload(msg)
                               ) : (
                                 <div className="text-left text-xs break-all leading-relaxed">{decryptedContent}</div>
                               )}
                               {renderDeliveryTrace(msg)}
                             </div>
-                            <span className="text-[7px] text-white/30 font-mono uppercase mt-1 px-2">
-                              {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
+                            <div className="flex items-center gap-2 mt-1 px-2 text-[7px] text-white/30 font-mono uppercase">
+                              <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              {!msg.isDeleted && (
+                                <>
+                                  <span className="text-white/10 select-none">•</span>
+                                  <button
+                                    onClick={() => handleDeleteMessageForMe(msg)}
+                                    className="hover:text-red-400 hover:underline transition-colors cursor-pointer"
+                                  >
+                                    Delete For Me
+                                  </button>
+                                  {isMe && (
+                                    <>
+                                      <span className="text-white/10 select-none">•</span>
+                                      <button
+                                        onClick={() => handleDeleteMessageForBoth(msg)}
+                                        className="hover:text-red-400 hover:underline transition-colors cursor-pointer text-red-500/80 font-bold"
+                                      >
+                                        Delete For Both
+                                      </button>
+                                    </>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
