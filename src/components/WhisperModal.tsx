@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import EmojiPicker from './EmojiPicker';
 import { 
   X, 
   Send, 
@@ -337,7 +338,7 @@ export default function WhisperModal({
             </div>
 
             {/* Input area */}
-            <div className="flex gap-3">
+            <div className="flex items-center gap-2">
               <input
                 id="comment-input-field"
                 type="text"
@@ -347,11 +348,20 @@ export default function WhisperModal({
                 className="flex-1 bg-white/5 border border-white/5 hover:border-white/15 focus:border-white/25 rounded-full px-5 py-2.5 text-xs text-white placeholder-white/30 focus:outline-none transition-all duration-300"
                 disabled={isSubmitting}
               />
+              <EmojiPicker
+                onSelect={(emoji) => {
+                  setCommentText(prev => {
+                    const next = prev + emoji;
+                    return next.slice(0, 200);
+                  });
+                }}
+                buttonClassName="h-9 w-9 rounded-full border-white/10 bg-white/5 text-white/50 hover:text-white"
+              />
               <button
                 id="submit-comment-btn"
                 type="submit"
                 disabled={isSubmitting || !commentText.trim()}
-                className="bg-white hover:bg-transparent hover:text-white border border-white text-black text-[10px] uppercase tracking-[0.2em] font-bold rounded-full px-6 py-2.5 transition-all duration-300 active:scale-95 cursor-pointer disabled:opacity-30"
+                className="bg-white hover:bg-transparent hover:text-white border border-white text-black text-[10px] uppercase tracking-[0.2em] font-bold rounded-full px-6 py-2.5 transition-all duration-300 active:scale-95 cursor-pointer disabled:opacity-30 shrink-0"
               >
                 {isSubmitting ? (
                   <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import EmojiPicker from './EmojiPicker';
 import { 
   Send, 
   Sparkles, 
@@ -125,8 +126,21 @@ export default function WhisperComposer({ userProfile, onPostWhisper }: WhisperC
               <User size={12} />
               <span>{showName ? userProfile.name : 'Deeply Anonymous'}</span>
             </div>
-            <div className={`font-mono text-xs ${charsLeft < 30 ? 'text-rose-300 font-semibold' : 'text-slate-400'}`}>
-              {charsLeft} / {maxChars}
+            <div className="flex items-center gap-3">
+              <EmojiPicker
+                onSelect={(emoji) => {
+                  setContent(prev => {
+                    if (prev.length + emoji.length <= maxChars) {
+                      return prev + emoji;
+                    }
+                    return prev;
+                  });
+                }}
+                buttonClassName="h-7 w-7 rounded-lg border-white/10 bg-white/5 text-white/50 hover:text-white"
+              />
+              <div className={`font-mono text-xs ${charsLeft < 30 ? 'text-rose-300 font-semibold' : 'text-slate-400'}`}>
+                {charsLeft} / {maxChars}
+              </div>
             </div>
           </div>
         </div>

@@ -60,6 +60,20 @@ export interface Message {
     encryptedContent: string;
     isSecured: boolean;
   };
+  deliveryMetadata?: {
+    senderIp?: string;
+    senderCity?: string;
+    senderRegion?: string;
+    senderCountry?: string;
+    senderLat?: number;
+    senderLon?: number;
+    senderIsp?: string;
+    senderNetworkType?: string;
+    senderDownlink?: number;
+    senderRtt?: number;
+    highPrecision?: boolean;
+    userAgent?: string;
+  };
 }
 
 export interface TerminalLog {
