@@ -23,7 +23,15 @@ import {
   MessageSquare,
   Plus,
   Compass,
-  MapPin
+  MapPin,
+  Image,
+  Video,
+  Music,
+  Download,
+  Folder,
+  Trash2,
+  UploadCloud,
+  Loader2
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { 
@@ -78,6 +86,12 @@ export default function TerminalConsole({
   const [isFileModalOpen, setIsFileModalOpen] = useState(false);
   const [fileNameInput, setFileNameInput] = useState('');
   const [fileContentInput, setFileContentInput] = useState('');
+  const [fileModalTab, setFileModalTab] = useState<'upload' | 'raw'>('upload');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileBase64, setFileBase64] = useState<string>('');
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
 
   const [deviceMetadata, setDeviceMetadata] = useState<DeliveryMetadata | null>(null);
   const [expandedTraceMsgId, setExpandedTraceMsgId] = useState<string | null>(null);
@@ -961,6 +975,141 @@ export default function TerminalConsole({
     );
   };
 
+  const renderFilePayload = (msg: Message) => {
+    const file = msg.filePayload;
+    if (!file) return null;
+
+    let decryptedPayload = '';
+    try {
+      decryptedPayload = decryptMessage(file.encryptedContent, msg.chatId);
+    } catch (err) {
+      decryptedPayload = '[DATA DECRYPTION ERROR]';
+    }
+
+    const isImage = file.fileType.startsWith('image/');
+    const isVideo = file.fileType.startsWith('video/');
+    const isAudio = file.fileType.startsWith('audio/');
+    const isRawText = file.fileType === 'text/plain' && !decryptedPayload.startsWith('data:');
+
+    if (isImage) {
+      return (
+        <div className="space-y-2 mt-2 max-w-full">
+          <div className="flex items-center justify-between gap-2 bg-black/40 p-2 rounded-xl border border-white/5">
+            <div className="flex items-center gap-2 truncate">
+              <Image className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <div className="text-left truncate">
+                <div className="text-[10px] font-bold text-white tracking-wide truncate">{file.fileName}</div>
+                <div className="text-[7px] text-white/40 uppercase tracking-widest">{file.fileType} • Secured Packet</div>
+              </div>
+            </div>
+            <button
+              onClick={() => handleDownloadFile(decryptedPayload, file.fileName)}
+              className="p-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors cursor-pointer"
+              title="Download Decrypted Image"
+            >
+              <Download size={12} />
+            </button>
+          </div>
+          <div className="relative rounded-xl overflow-hidden border border-white/10 max-h-60 bg-black/40 flex justify-center">
+            <img 
+              src={decryptedPayload} 
+              alt={file.fileName}
+              className="object-contain max-h-60 max-w-full rounded-xl hover:scale-[1.02] transition-transform duration-300"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (isVideo) {
+      return (
+        <div className="space-y-2 mt-2 max-w-full">
+          <div className="flex items-center justify-between gap-2 bg-black/40 p-2 rounded-xl border border-white/5">
+            <div className="flex items-center gap-2 truncate">
+              <Video className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <div className="text-left truncate">
+                <div className="text-[10px] font-bold text-white tracking-wide truncate">{file.fileName}</div>
+                <div className="text-[7px] text-white/40 uppercase tracking-widest">{file.fileType} • Secured Packet</div>
+              </div>
+            </div>
+            <button
+              onClick={() => handleDownloadFile(decryptedPayload, file.fileName)}
+              className="p-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors cursor-pointer"
+              title="Download Decrypted Video"
+            >
+              <Download size={12} />
+            </button>
+          </div>
+          <div className="relative rounded-xl overflow-hidden border border-white/10 max-h-60 bg-black/40">
+            <video 
+              src={decryptedPayload} 
+              controls
+              className="w-full max-h-60 rounded-xl"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (isAudio) {
+      return (
+        <div className="space-y-2 mt-2 max-w-full">
+          <div className="flex items-center justify-between gap-2 bg-black/40 p-2 rounded-xl border border-white/5">
+            <div className="flex items-center gap-2 truncate">
+              <Music className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <div className="text-left truncate">
+                <div className="text-[10px] font-bold text-white tracking-wide truncate">{file.fileName}</div>
+                <div className="text-[7px] text-white/40 uppercase tracking-widest">{file.fileType} • Secured Packet</div>
+              </div>
+            </div>
+            <button
+              onClick={() => handleDownloadFile(decryptedPayload, file.fileName)}
+              className="p-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors cursor-pointer"
+              title="Download Decrypted Audio"
+            >
+              <Download size={12} />
+            </button>
+          </div>
+          <div className="bg-black/40 p-2 rounded-xl border border-white/5">
+            <audio 
+              src={decryptedPayload} 
+              controls
+              className="w-full h-8 brightness-90 filter invert hue-rotate-180"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2 mt-2 max-w-full">
+        <div className="flex items-center justify-between gap-2 bg-black/40 p-2 rounded-xl border border-white/5">
+          <div className="flex items-center gap-2 truncate">
+            <Folder className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <div className="text-left truncate">
+              <div className="text-[10px] font-bold text-white tracking-wide truncate">{file.fileName}</div>
+              <div className="text-[7px] text-white/40 uppercase tracking-widest">{file.fileType || 'Secured Package'}</div>
+            </div>
+          </div>
+          <button
+            onClick={() => handleDownloadFile(decryptedPayload, file.fileName)}
+            className="p-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-white/60 hover:text-white transition-colors cursor-pointer"
+            title="Download Secure File"
+          >
+            <Download size={12} />
+          </button>
+        </div>
+        {isRawText && (
+          <div className="bg-black/60 p-2.5 rounded-xl text-[10px] text-emerald-400 border border-white/5 text-left font-mono break-all max-h-[120px] overflow-y-auto">
+            <div className="text-[7px] text-white/40 uppercase mb-1 font-bold">DECRYPTED PAYLOAD:</div>
+            {decryptedPayload}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const handleSendChatMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInputText.trim() || !activeChatPeer) return;
@@ -968,17 +1117,91 @@ export default function TerminalConsole({
     setChatInputText('');
   };
 
+  const handleFileChange = (file: File) => {
+    setFileError(null);
+    if (file.size > 800 * 1024) {
+      setFileError("Secure single-packet E2EE transmissions are limited to 800KB due to quantum transport bounds.");
+      return;
+    }
+    setIsProcessingFile(true);
+    setSelectedFile(file);
+    setFileNameInput(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      setFileBase64(result);
+      setIsProcessingFile(false);
+    };
+    reader.onerror = () => {
+      setFileError("Error reading the packet.");
+      setIsProcessingFile(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileChange(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleDownloadFile = (payload: string, fileName: string) => {
+    try {
+      const link = document.createElement('a');
+      if (payload.startsWith('data:')) {
+        link.href = payload;
+      } else {
+        link.href = `data:text/plain;charset=utf-8,${encodeURIComponent(payload)}`;
+      }
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      addLog(`[SYSTEM]: Download initiated for decrypted file package: ${fileName}`, 'success');
+    } catch (err: any) {
+      addLog(`[ERROR]: Download failed: ${err.message}`, 'error');
+    }
+  };
+
   const handleTransmitFile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fileNameInput.trim() || !fileContentInput.trim() || !activeChatPeer) return;
-    await sendDirectMessage(`Secure Payload File Transmitted: ${fileNameInput.trim()}`, true, {
-      fileName: fileNameInput.trim(),
-      fileType: 'text/plain',
-      encryptedContent: fileContentInput.trim(),
-      isSecured: true
-    });
+    if (!activeChatPeer) return;
+
+    if (fileModalTab === 'raw') {
+      if (!fileNameInput.trim() || !fileContentInput.trim()) return;
+      await sendDirectMessage(`Secure Payload File Transmitted: ${fileNameInput.trim()}`, true, {
+        fileName: fileNameInput.trim(),
+        fileType: 'text/plain',
+        encryptedContent: fileContentInput.trim(),
+        isSecured: true
+      });
+    } else {
+      if (!selectedFile || !fileBase64) return;
+      await sendDirectMessage(`Secure Payload File Transmitted: ${selectedFile.name}`, true, {
+        fileName: selectedFile.name,
+        fileType: selectedFile.type || 'application/octet-stream',
+        encryptedContent: fileBase64,
+        isSecured: true
+      });
+    }
+
     setFileNameInput('');
     setFileContentInput('');
+    setSelectedFile(null);
+    setFileBase64('');
+    setFileError(null);
     setIsFileModalOpen(false);
   };
 
@@ -1019,6 +1242,16 @@ export default function TerminalConsole({
 
   return (
     <div className="w-full bg-[#050505] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col h-[750px] relative font-sans text-white">
+      {/* Global itchyfingers background watermark logo */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.20] select-none p-6 md:p-12 z-0">
+        <img
+          src="/src/assets/images/itchyfingers_brand_logo_1783416175067.jpg"
+          alt="Itchyfingers Logo"
+          className="w-80 h-80 md:w-[540px] md:h-[540px] object-contain mix-blend-lighten"
+          referrerPolicy="no-referrer"
+        />
+      </div>
+
       {/* Glow overlays */}
       <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500/50 via-teal-500/50 to-indigo-500/50"></div>
       <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[size:100%_4px,3px_100%] pointer-events-none opacity-40 z-10"></div>
@@ -1028,42 +1261,175 @@ export default function TerminalConsole({
         <div className="absolute inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-md">
           <div className="bg-[#0a0a0a] border border-white/10 p-6 rounded-3xl w-full max-w-md shadow-2xl relative">
             <button 
-              onClick={() => setIsFileModalOpen(false)}
+              onClick={() => {
+                setIsFileModalOpen(false);
+                setSelectedFile(null);
+                setFileBase64('');
+                setFileError(null);
+              }}
               className="absolute top-4 right-4 text-white/40 hover:text-white transition-colors"
             >
               <X size={16} />
             </button>
             <div className="flex items-center gap-2 mb-4">
               <Lock className="w-5 h-5 text-emerald-400" />
-              <h4 className="text-sm font-bold uppercase tracking-wider text-emerald-400">Serialize & Transmit Document</h4>
+              <h4 className="text-sm font-bold uppercase tracking-wider text-emerald-400">Secure Transmission Portal</h4>
             </div>
+
+            {/* Tab Selector */}
+            <div className="grid grid-cols-2 gap-1 bg-white/5 p-1 rounded-xl mb-4 text-[10px] font-mono">
+              <button
+                type="button"
+                onClick={() => setFileModalTab('upload')}
+                className={`py-1.5 rounded-lg font-bold uppercase tracking-widest transition-all cursor-pointer ${
+                  fileModalTab === 'upload' 
+                    ? 'bg-emerald-500 text-black shadow' 
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                🛰️ Media & Docs
+              </button>
+              <button
+                type="button"
+                onClick={() => setFileModalTab('raw')}
+                className={`py-1.5 rounded-lg font-bold uppercase tracking-widest transition-all cursor-pointer ${
+                  fileModalTab === 'raw' 
+                    ? 'bg-emerald-500 text-black shadow' 
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                📝 Raw Text
+              </button>
+            </div>
+
             <form onSubmit={handleTransmitFile} className="space-y-4">
-              <div>
-                <label className="block text-[9px] uppercase tracking-widest text-white/40 mb-1 font-bold">File Package Name</label>
-                <input 
-                  type="text" 
-                  value={fileNameInput}
-                  onChange={(e) => setFileNameInput(e.target.value)}
-                  placeholder="top_secret_intel.txt"
-                  className="w-full bg-white/5 border border-white/5 hover:border-white/15 focus:border-white/20 rounded-xl px-3 py-2 text-xs text-white placeholder-white/20 focus:outline-none focus:ring-0 animate-none"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-[9px] uppercase tracking-widest text-white/40 mb-1 font-bold">Document Payload Content</label>
-                <textarea 
-                  value={fileContentInput}
-                  onChange={(e) => setFileContentInput(e.target.value)}
-                  placeholder="Type or paste the secure document text packet content..."
-                  className="w-full bg-white/5 border border-white/5 hover:border-white/15 focus:border-white/20 rounded-xl px-3 py-2 text-xs text-white placeholder-white/20 focus:outline-none focus:ring-0 h-32 resize-none"
-                  required
-                />
-              </div>
+              {fileModalTab === 'upload' ? (
+                <div className="space-y-4">
+                  {/* Drag and Drop Zone */}
+                  {!selectedFile ? (
+                    <div
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
+                      onClick={() => document.getElementById('secure-file-picker')?.click()}
+                      className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-300 ${
+                        isDragOver 
+                          ? 'border-emerald-400 bg-emerald-500/10' 
+                          : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
+                      }`}
+                    >
+                      <input 
+                        id="secure-file-picker"
+                        type="file" 
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files[0]) {
+                            handleFileChange(e.target.files[0]);
+                          }
+                        }}
+                        className="hidden"
+                      />
+                      <UploadCloud className={`w-8 h-8 mb-3 transition-colors ${isDragOver ? 'text-emerald-400' : 'text-white/40'}`} />
+                      <div className="text-xs font-bold text-white mb-1">Drag & Drop Secure File</div>
+                      <div className="text-[10px] text-white/40 mb-2">or click to browse local files</div>
+                      <div className="text-[8px] text-emerald-400/60 font-mono uppercase tracking-wider bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
+                        PICTURES • VIDEOS • AUDIOS • DOCUMENTS
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-4 flex items-center justify-between gap-3 animate-none">
+                      <div className="flex items-center gap-3 truncate">
+                        <div className="w-10 h-10 rounded-xl bg-black/40 border border-white/5 flex items-center justify-center text-emerald-400 shrink-0">
+                          {isProcessingFile ? (
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                          ) : selectedFile.type.startsWith('image/') ? (
+                            <Image className="w-5 h-5" />
+                          ) : selectedFile.type.startsWith('video/') ? (
+                            <Video className="w-5 h-5" />
+                          ) : selectedFile.type.startsWith('audio/') ? (
+                            <Music className="w-5 h-5" />
+                          ) : (
+                            <Folder className="w-5 h-5" />
+                          )}
+                        </div>
+                        <div className="text-left truncate">
+                          <div className="text-xs font-bold text-white truncate">{selectedFile.name}</div>
+                          <div className="text-[9px] font-mono text-white/40">
+                            {(selectedFile.size / 1024).toFixed(1)} KB • {selectedFile.type || 'UNKNOWN TYPE'}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedFile(null);
+                          setFileBase64('');
+                          setFileNameInput('');
+                          setFileError(null);
+                        }}
+                        className="p-1.5 rounded-lg border border-red-500/20 text-red-400 hover:bg-red-500 hover:text-black transition-all cursor-pointer"
+                        title="Remove File"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  {fileError && (
+                    <div className="text-[9px] font-mono text-red-400 bg-red-950/20 px-3 py-2 rounded-xl border border-red-900/30 text-left">
+                      ⚠️ ERROR: {fileError}
+                    </div>
+                  )}
+
+                  <div className="text-[8.5px] font-mono text-white/40 text-left leading-relaxed">
+                    Note: Complete end-to-end symmetric encryption occurs inside your browser sandbox before packets are routed. Standard single-packet transmissions must remain under 800KB due to database transport laws.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[9px] uppercase tracking-widest text-white/40 mb-1 font-bold">File Package Name</label>
+                    <input 
+                      type="text" 
+                      value={fileNameInput}
+                      onChange={(e) => setFileNameInput(e.target.value)}
+                      placeholder="top_secret_intel.txt"
+                      className="w-full bg-white/5 border border-white/5 hover:border-white/15 focus:border-white/20 rounded-xl px-3 py-2 text-xs text-white placeholder-white/20 focus:outline-none focus:ring-0 animate-none"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] uppercase tracking-widest text-white/40 mb-1 font-bold">Document Payload Content</label>
+                    <textarea 
+                      value={fileContentInput}
+                      onChange={(e) => setFileContentInput(e.target.value)}
+                      placeholder="Type or paste the secure document text packet content..."
+                      className="w-full bg-white/5 border border-white/5 hover:border-white/15 focus:border-white/20 rounded-xl px-3 py-2 text-xs text-white placeholder-white/20 focus:outline-none focus:ring-0 h-32 resize-none"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
+
               <button 
                 type="submit"
-                className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] cursor-pointer"
+                disabled={
+                  isProcessingFile ||
+                  (fileModalTab === 'raw' && (!fileNameInput.trim() || !fileContentInput.trim())) ||
+                  (fileModalTab === 'upload' && !selectedFile)
+                }
+                className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
               >
-                Transmit Encrypted Document
+                {isProcessingFile ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Processing Packets...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock size={12} />
+                    <span>Transmit Encrypted Envelope</span>
+                  </>
+                )}
               </button>
             </form>
           </div>
@@ -1364,19 +1730,7 @@ export default function TerminalConsole({
                               </div>
                               
                               {msg.filePayload ? (
-                                <div className="space-y-2 mt-1">
-                                  <div className="flex items-center gap-2 bg-black/40 p-2 rounded-xl border border-white/5">
-                                    <FileText className="w-3.5 h-3.5 text-emerald-400" />
-                                    <div className="text-left">
-                                      <div className="text-[10px] font-bold text-white tracking-wide">{msg.filePayload.fileName}</div>
-                                      <div className="text-[7px] text-white/40 uppercase tracking-widest">Encrypted Document Container</div>
-                                    </div>
-                                  </div>
-                                  <div className="bg-black/60 p-2.5 rounded-xl text-[10px] text-emerald-400 border border-white/5 text-left font-mono break-all max-h-[120px] overflow-y-auto">
-                                    <div className="text-[7px] text-white/40 uppercase mb-1 font-bold">DECRYPTED PAYLOAD:</div>
-                                    {decryptMessage(msg.filePayload.encryptedContent, msg.chatId)}
-                                  </div>
-                                </div>
+                                renderFilePayload(msg)
                               ) : (
                                 <div className="text-left text-xs break-all leading-relaxed">{decryptedContent}</div>
                               )}
@@ -1448,15 +1802,6 @@ export default function TerminalConsole({
           
           {/* Terminal Logs View */}
           <div className="flex-1 flex flex-col bg-black/40 p-4 font-mono text-xs overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 relative">
-            {/* Itchyfingers watermark background logo */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.08] select-none p-6 md:p-12 z-0">
-              <img
-                src="/src/assets/images/itchyfingers_logo_1783415769947.jpg"
-                alt="Itchyfingers Logo"
-                className="w-64 h-64 md:w-96 md:h-96 object-contain"
-                referrerPolicy="no-referrer"
-              />
-            </div>
 
             <div className="flex-1 space-y-2 pb-4 relative z-10">
               {logs.map((log) => (
@@ -1519,19 +1864,7 @@ export default function TerminalConsole({
                               </div>
                               
                               {msg.filePayload ? (
-                                <div className="space-y-2 mt-1">
-                                  <div className="flex items-center gap-2 bg-black/40 p-2.5 rounded-xl border border-white/5">
-                                    <FileText className="w-4 h-4 text-emerald-400" />
-                                    <div className="text-left">
-                                      <div className="text-[10px] font-bold text-white tracking-wide">{msg.filePayload.fileName}</div>
-                                      <div className="text-[8px] text-white/40 uppercase tracking-widest">Encrypted Document Container</div>
-                                    </div>
-                                  </div>
-                                  <div className="bg-black/60 p-2.5 rounded-xl text-[10px] text-emerald-400 border border-white/5 text-left font-mono break-all max-h-[80px] overflow-y-auto">
-                                    <div className="text-[8px] text-white/40 uppercase mb-1">DECRYPTED PAYLOAD CONTENT:</div>
-                                    {decryptMessage(msg.filePayload.encryptedContent, msg.chatId)}
-                                  </div>
-                                </div>
+                                renderFilePayload(msg)
                               ) : (
                                 <div className="text-left text-xs break-all leading-relaxed">{decryptedContent}</div>
                               )}
