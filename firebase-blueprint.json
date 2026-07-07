@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered anonymous profiles lookup-able by User ID",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique user ID" },
+        "name": { "type": "string", "description": "Anonymous pen name" },
+        "avatarEmoji": { "type": "string", "description": "Avatar Emoji" },
+        "createdAt": { "type": "number", "description": "Timestamp" }
+      },
+      "required": ["id", "name", "avatarEmoji", "createdAt"]
+    },
+    "Connection": {
+      "title": "Connection",
+      "description": "Secure connection / friend requests between anonymous nodes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Connection ID" },
+        "requesterId": { "type": "string", "description": "Requester Node ID" },
+        "receiverId": { "type": "string", "description": "Receiver Node ID" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "requesterName": { "type": "string" },
+        "receiverName": { "type": "string" },
+        "requesterEmoji": { "type": "string" },
+        "receiverEmoji": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "requesterId", "receiverId", "status", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "End-to-end encrypted direct messaging between connected nodes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chatId": { "type": "string", "description": "Associated Connection ID" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "content": { "type": "string", "description": "Encrypted text payload" },
+        "isEncrypted": { "type": "boolean" },
+        "encryptionKey": { "type": "string", "description": "Symmetric key hint or lock" },
+        "createdAt": { "type": "number" },
+        "filePayload": {
+          "type": "object",
+          "properties": {
+            "fileName": { "type": "string" },
+            "fileType": { "type": "string" },
+            "encryptedContent": { "type": "string" },
+            "isSecured": { "type": "boolean" }
+          }
+        }
+      },
+      "required": ["id", "chatId", "senderId", "receiverId", "content", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Directory of active secure nodes"
+    },
+    "/connections/{connectionId}": {
+      "schema": "Connection",
+      "description": "Connection links"
+    },
+    "/connections/{connectionId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Secure messages subcollection for a given connection"
+    }
+  }
+}

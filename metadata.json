@@ -1,0 +1,6 @@
+{
+  "name": "Whisper",
+  "description": "A secure, anonymous social platform to post messages and view a global feed of whispers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

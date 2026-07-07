@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Whispers Collection
+    match /whispers/{whisperId} {
+      allow read, write: if true;
+    }
+
+    // Comments subcollection
+    match /whispers/{whisperId}/comments/{commentId} {
+      allow read, write: if true;
+    }
+
+    // Connections Collection
+    match /connections/{connectionId} {
+      allow read, write: if true;
+    }
+
+    // Messages Subcollection
+    match /connections/{connectionId}/messages/{messageId} {
+      allow read, write: if true;
+    }
+  }
+}
